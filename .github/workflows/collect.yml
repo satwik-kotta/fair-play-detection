@@ -1,0 +1,45 @@
+name: collect
+# Streams one week of rated games from the Lichess open database, looks up the status of every
+# account that played at least three of them, and commits hashed datasets to data/.
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Month of the Lichess database to read (YYYY-MM)"
+        default: "2026-08"
+      max_games:
+        description: "Stop after this many games"
+        default: "21000000"
+      min_games:
+        description: "Label accounts with at least this many games"
+        default: "3"
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyarrow duckdb
+      - name: Stream games
+        run: |
+          mkdir -p work
+          URL="https://database.lichess.org/standard/lichess_db_standard_rated_${{ inputs.month }}.pgn.zst"
+          curl -sL --fail "$URL" | zstd -dc | python -m collect.stream_games --out work/games --max-games ${{ inputs.max_games }} || true
+          ls work/games | wc -l
+          du -sh work/games
+      - name: Label accounts
+        run: python -m collect.label_accounts --games work/games --out work/accounts.parquet --min-games ${{ inputs.min_games }}
+      - name: Build hashed datasets
+        run: python -m collect.build_dataset --games work/games --accounts work/accounts.parquet --out data
+      - name: Commit
+        run: |
+          ls -la data
+          git config user.name "Satwik Kotta"
+          git config user.email "satwikkotta09@gmail.com"
+          git add data
+          git commit -m "Data: ${{ inputs.month }}, up to ${{ inputs.max_games }} games"
+          git push
